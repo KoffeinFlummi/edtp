@@ -162,8 +162,20 @@ def main(args):
         if not args["--permit"]:
             systems = {k: v for k,v in systems.items() if v["permit"] == 0}
         print("done. ({} systems remaining)".format(len(systems)))
-    else:
-        pass
+    elif args["pool"]:
+        s = [x.lower() for x in args["<system>"]]
+        if not args["--permit"]:
+            systems = {k: v for k,v in systems.items() if v["name"].lower() in s and v["permit"] == 0}
+        else:
+            systems = {k: v for k,v in systems.items() if v["name"].lower() in s}
+        if len(systems) != len(s):
+            print("\nCouldn't find all systems")
+            return 1
+    elif args["route"]:
+        #edtp route [-hf]  <system_from> <system_to> [--station_from=<name>] [--station_to=<name>]
+        from_systems = {k: v for k,v in systems.items() if v["name"].lower() == args["<system_from>"].lower()}
+        to_systems = {k: v for k,v in systems.items() if v["name"].lower() == args["<system_to>"].lower()}
+        print("done.")
 
     # Filter stations
     print("Filtering station data ... ", end="", flush=True)
@@ -184,13 +196,20 @@ def main(args):
                 return 1
         tos = stations
         print("done. ({} stations remaining)".format(len(stations)))
-    elif args["all"]:
+    elif args["all"] or args["pool"]:
         stations = {k: v for k,v in stations.items() if str(v["system"]) in systems.keys()}
         froms = stations
         tos = stations
         print("done. ({} stations remaining)".format(len(stations)))
-    else:
-        pass
+    elif args["route"]:
+        froms = {k: v for k,v in stations.items() if str(v["system"]) in from_systems.keys()}
+        tos = {k: v for k,v in stations.items() if str(v["system"]) in to_systems.keys()}
+        if args["--station_from"] is not None:
+            froms = {k: v for k,v in froms.items() if v["name"].lower() == args["--station_from"].lower()}
+        if args["--station_to"] is not None:
+            tos = {k: v for k,v in tos.items() if v["name"].lower() == args["--station_to"].lower()}
+        print("done.")
+            
 
     # Get trade routes
     print("Getting trade routes ... ", end="", flush=True)
