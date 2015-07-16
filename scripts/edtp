@@ -3,11 +3,11 @@
 """edtp - Command line Elite: Dangerous trade route planner
 
 Usage:
-    edtp area  [-hpf] <system> [--range=<lys>]
-    edtp route [-hf]  <system_from> <system_to> [--station_from=<name>] [--station_to=<name>]
-    edtp pool  [-hf]  <system> <system>...
-    edtp start [-hpf] <system> [--station=<name>] [--range=<lys>]
-    edtp all [-hpf]
+    edtp area  [-hmpf] <system> [--range=<lys>]
+    edtp route [-hmf]  <system_from> <system_to> [--station_from=<name>] [--station_to=<name>]
+    edtp pool  [-hmf]  <system> <system>...
+    edtp start [-hmpf] <system> [--station=<name>] [--range=<lys>]
+    edtp all [-hmpf]
     edtp -h | --help
 
 Commands:
@@ -22,6 +22,7 @@ Options:
     system_from           "
     system_to             "
     -h --help             Show this help
+    -m --multithread      Allow multithreading when needed
     -p --permit           Include systems that require permits
     -f --force            Force a refresh of the cached trading data
     --range=<lys>         Maximum distance in lightyears [default: 50]
@@ -34,9 +35,11 @@ import os
 import sys
 import json
 import time
+import math
 import numpy
 import docopt
 import requests
+import multiprocessing as mp
 
 VERSION = "1.0"
 CACHEDIR = "/tmp"
@@ -101,6 +104,18 @@ def distance(v1, v2):
     return numpy.linalg.norm(p1 - p2)
 
 
+def split_dict(di, num=2):
+    chunks = [dict() for i in range(num)]
+    csize = math.floor(len(di) / num)
+    i, j = 0, 0
+    for k, v in di.items():
+        chunks[i][k] = v
+        if j > (i+1) * csize and i < len(chunks) - 1:
+            i += 1
+        j += 1
+    return chunks
+
+
 def best_product(from_station, to_station):
     profit = 0
     comm = ""
@@ -118,21 +133,44 @@ def best_product(from_station, to_station):
     return (comm, profit)
 
 
-def best_routes(froms, tos):
+def best_routes_sub(froms, tos, q, showprogress=False):
     routes = []
     c = 0
     s = time.time()
-    ex = routes.extend # don't ask
     for i, f in froms.items():
         routes.extend([(i, j) + best_product(f, t) for j,t in tos.items() if i != j])
-        try:
-            r = (time.time() - s) * (1 - c/len(froms)) / (c/len(froms))
-        except:
-            r = 0
-        hours, remainder = divmod(r, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        print("\rGetting trade routes ... {:>3}% {:02}:{:02}:{:02} remaining".format(round(100 * c/len(froms)), int(hours), int(minutes), int(seconds)), end="", flush=True)
-        c += 1
+        routes.sort(key=lambda x: -1 * x[3])
+        routes = routes[:10] # prevent memory leak
+        if showprogress:
+            try:
+                r = (time.time() - s) * (1 - c/len(froms)) / (c/len(froms))
+            except:
+                r = 0
+            hours, remainder = divmod(r, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            print("\rGetting trade routes ... {:>3}% {:02}:{:02}:{:02} remaining".format(round(100 * c/len(froms)), int(hours), int(minutes), int(seconds)), end="", flush=True)
+            c += 1
+    if q is not None:
+        q.put(routes)
+    else:
+        return routes
+
+
+def best_routes(froms, tos, multithread=False):
+    if not multithread:
+        return best_routes_sub(froms, tos, None, True)
+    procs = []
+    from_pieces = split_dict(froms, mp.cpu_count())
+    to_pieces = split_dict(tos, mp.cpu_count())
+    for i in range(mp.cpu_count() - 1):
+        q = mp.Queue()
+        p = mp.Process(target=best_routes_sub, args=(from_pieces[i], to_pieces[i], q, False))
+        p.start()
+        procs.append((p, q))
+    routes = best_routes_sub(from_pieces[i], to_pieces[i], None, True)
+    for p, q in procs:
+        routes.extend(q.get())
+        p.join()
     routes.sort(key=lambda x: -1 * x[3])
     return routes[:10]
 
@@ -212,8 +250,13 @@ def main(args):
             
 
     # Get trade routes
+    multi = args["--multithread"] and len(froms) * len(tos) > 100000
+    if multi:
+        print("Using {} cores for {} routes.".format(mp.cpu_count(), len(froms) * len(tos)))
+    elif args["--multithread"]:
+        print("Multithreading not necessary for {} routes.".format(len(froms) * len(tos)))
     print("Getting trade routes ... ", end="", flush=True)
-    routes = best_routes(froms, tos)
+    routes = best_routes(froms, tos, multi)
     print("\rGetting trade routes ... done.              ")
 
     for i, r in enumerate(routes):
